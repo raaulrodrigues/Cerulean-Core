@@ -2,7 +2,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useTeamStore } from '@/lib/useTeamStore';
+import { PokemonSet } from '@/lib/constants';
 import Link from 'next/link';
+import { parseBattleLog, initialBattleState, BattleState } from '@/lib/battleParser';
+import HPBar from './hp-bar';
 
 let socket: Socket;
 
@@ -32,26 +35,23 @@ interface Side {
 
 interface BattleRequest {
   side: Side;
-  active: RequestPokemon[];
+  active?: RequestPokemon[];
   teamPreview?: boolean;
   forceSwitch?: boolean;
 }
 
 export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
-  const [battleLogs, setBattleLogs] = useState<string[]>([]);
+  const [battleState, setBattleState] = useState<BattleState>(initialBattleState);
   const [activeMoves, setActiveMoves] = useState<Move[]>([]);
   const [playerID, setPlayerID] = useState<'p1' | 'p2' | null>(null);
   const [status, setStatus] = useState<string>('Conectado');
+  const [winner, setWinner] = useState<string | null>(null);
+  const [isSwitching, setIsSwitching] = useState(false);
   
   const { team } = useTeamStore();
 
-  const logsRef = useRef(battleLogs);
   const playerIDRef = useRef(playerID);
-  
-  useEffect(() => {
-    logsRef.current = battleLogs;
-  }, [battleLogs]);
   
   useEffect(() => {
     playerIDRef.current = playerID;
@@ -74,15 +74,20 @@ export default function Home() {
     socket.on('battle-start', (id: 'p1' | 'p2') => {
       setPlayerID(id);
       setStatus('Batalha em andamento');
+      setBattleState(initialBattleState);
+      setWinner(null);
     });
 
     socket.on('battle-log', (chunk: string) => {
-      const lines = chunk.split('\n');
-      const newLogs = [...logsRef.current, ...lines];
-      setBattleLogs(newLogs);
+      setBattleState((prevState: BattleState) => {
+        const newState = parseBattleLog(prevState, chunk);
+        return newState;
+      });
 
       const currentPID = playerIDRef.current; 
       if (!currentPID) return;
+
+      const lines = chunk.split('\n');
 
       for (const line of lines) {
         if (line.startsWith('|request|')) {
@@ -93,22 +98,28 @@ export default function Home() {
               
               if (request.side.id === currentPID) {
                 if (request.teamPreview) {
-                  const teamString = Array.from({ length: team.length }, (_, i) => i + 1).join('');
+                  const teamString = Array.from({ length: team.length }, (_, i: number) => i + 1).join('');
                   sendChoice(`>${currentPID} team ${teamString}`);
                 } else if (request.forceSwitch) {
-                  const availableSlot = request.side.pokemon.findIndex(p => p.condition !== '0 fnt' && !p.active);
-                  
+                  const availableSlot = request.side.pokemon.findIndex((p: RequestPokemon) => p.condition !== '0 fnt' && !p.active);
                   if (availableSlot !== -1) {
                     sendChoice(`>${currentPID} switch ${availableSlot + 1}`);
                   }
                 } else if (request.active) {
                   setActiveMoves(request.active[0].moves);
+                  setIsSwitching(false); 
                 }
               }
             } catch (e) {
               console.error("Erro ao parsear JSON:", requestJson, e);
             }
           }
+        }
+        
+        if (line.startsWith('|win|')) {
+          setWinner(line.split('|')[2]);
+          setStatus("Batalha Terminada");
+          setActiveMoves([]);
         }
       }
     });
@@ -124,9 +135,11 @@ export default function Home() {
       return;
     }
     
-    setBattleLogs([]);
+    setBattleState(initialBattleState);
     setActiveMoves([]);
     setPlayerID(null);
+    setWinner(null);
+    setIsSwitching(false);
     setStatus('Procurando...');
     
     socket.emit('procurarBatalha', team); 
@@ -135,9 +148,30 @@ export default function Home() {
   const handleMoveClick = (moveIndex: number) => {
     sendChoice(`>${playerIDRef.current} move ${moveIndex + 1}`);
     setActiveMoves([]);
+    setIsSwitching(false);
   };
 
-  const showBattleUI = status.includes('Batalha') || activeMoves.length > 0;
+  const handleSwitchClick = (slotIndex: number) => {
+    sendChoice(`>${playerIDRef.current} switch ${slotIndex + 1}`);
+    setIsSwitching(false);
+    setActiveMoves([]);
+  };
+
+  const myTeam = playerID === 'p1' ? battleState.p1 : battleState.p2;
+  const opponentTeam = playerID === 'p1' ? battleState.p2 : battleState.p1;
+  const showBattleUI = status.includes('Batalha') || battleState.isActive;
+  const isOpponentActive = opponentTeam.active !== null;
+  const isMyPokemonActive = myTeam.active !== null;
+
+  const currentStatusText = winner
+    ? `VENCEDOR: ${winner}!`
+    : status === 'Batalha em andamento' && isConnected
+      ? 'Batalha em andamento'
+      : status;
+  
+  const showActionButtons = !isSwitching && activeMoves.length > 0 && winner === null;
+  const showSwitchButtons = isSwitching && winner === null;
+  const showSwitchOption = !isSwitching && activeMoves.length > 0 && winner === null;
 
   return (
     <main className="flex min-h-screen flex-col items-center p-12 bg-gray-900 text-white">
@@ -153,44 +187,110 @@ export default function Home() {
         </Link>
       )}
 
-      <p className="mb-6 text-gray-400">
-        Status: {isConnected ? status : 'Desconectado'}
+      <p className={`mb-6 text-xl font-semibold ${winner ? 'text-yellow-400' : 'text-gray-400'}`}>
+        Status: {isConnected ? currentStatusText : 'Desconectado'}
       </p>
 
       <button
         onClick={startBattle}
-        disabled={!isConnected || team.length === 0 || status === 'Procurando...'}
+        disabled={!isConnected || team.length === 0 || status === 'Procurando...' || winner !== null}
         className="rounded-md bg-green-600 px-6 py-3 text-xl font-semibold shadow-sm hover:bg-green-500 disabled:opacity-50"
       >
-        Procurar Batalha
+        {winner ? 'Jogar Novamente' : 'Procurar Batalha'}
       </button>
 
       {showBattleUI && (
-        <>
-          <div className="mt-8 w-full max-w-4xl h-96 overflow-y-scroll bg-black p-4 rounded-md font-mono text-sm border-2 border-gray-700">
-            {battleLogs.map((log, index) => (
+        <div className="mt-8 w-full max-w-4xl border border-gray-700 p-6 rounded-lg bg-gray-800">
+          
+          {/* Oponente UI (Topo) */}
+          <div className="mb-8 p-4 bg-gray-700 rounded-lg">
+            <p className="text-lg font-bold mb-2">
+              Oponente: {isOpponentActive ? opponentTeam.active!.species : 'Aguardando...'} ({opponentTeam.teamSize} Pokémon)
+            </p>
+            {isOpponentActive && (
+              <div className="flex items-center">
+                <span className="text-2xl mr-4">{opponentTeam.active!.species}</span>
+                <HPBar percentage={opponentTeam.active!.hpPercent} />
+                <span className="ml-3 text-sm">{opponentTeam.active!.hpPercent}%</span>
+              </div>
+            )}
+          </div>
+
+          {/* Player UI (Rodapé) */}
+          <div className="mt-8 p-4 bg-gray-700 rounded-lg">
+            <p className="text-lg font-bold mb-2">Seu Pokémon: {isMyPokemonActive ? myTeam.active!.species : '---'}</p>
+            {isMyPokemonActive && (
+              <div className="flex items-center">
+                <span className="text-2xl mr-4">{myTeam.active!.species}</span>
+                <HPBar percentage={myTeam.active!.hpPercent} />
+                <span className="ml-3 text-sm">{myTeam.active!.hpPercent}%</span>
+              </div>
+            )}
+          </div>
+
+          {/* Botões de Ação - Attack/Switch */}
+          <div className="mt-4 w-full max-w-4xl mx-auto">
+            {showSwitchOption && (
+              <button
+                onClick={() => setIsSwitching(true)}
+                className="w-full mb-2 p-2 bg-yellow-600 rounded-md font-semibold hover:bg-yellow-500"
+              >
+                Trocar Pokémon
+              </button>
+            )}
+
+            {showActionButtons && (
+              <div className="grid grid-cols-2 gap-4">
+                {activeMoves.map((move: Move, index: number) => (
+                  <button
+                    key={move.id}
+                    onClick={() => handleMoveClick(index)}
+                    disabled={move.disabled}
+                    className="rounded-md bg-gray-600 p-4 text-left font-bold text-white shadow-sm hover:bg-gray-500"
+                  >
+                    <p className="text-xl">{move.move}</p>
+                    <p className="text-sm font-normal text-gray-400">
+                      {move.pp} / {move.maxpp} PP
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {showSwitchButtons && (
+              <div className="grid grid-cols-3 gap-2">
+                {team.map((pokemon, index) => (
+                  <button
+                    key={pokemon.name}
+                    onClick={() => handleSwitchClick(index)}
+                    disabled={myTeam.active?.species === pokemon.species || pokemon.name === 'Fainted'} // Simplificado
+                    className={`rounded-md p-2 text-sm font-bold text-white shadow-sm ${myTeam.active?.species === pokemon.species ? 'bg-blue-800' : 'bg-gray-600 hover:bg-gray-500'}`}
+                  >
+                    {pokemon.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            
+            {showSwitchButtons && (
+              <button
+                onClick={() => setIsSwitching(false)}
+                className="w-full mt-2 p-1 bg-red-800 rounded-md font-semibold hover:bg-red-700"
+              >
+                Cancelar Troca
+              </button>
+            )}
+          </div>
+
+          {/* Log de Debug (Temporário) */}
+          <div className="mt-4 h-32 overflow-y-scroll bg-black p-2 rounded-md font-mono text-xs border-2 border-gray-700">
+            {battleState.logs.slice(-10).map((log: string, index: number) => (
               <pre key={index} className="whitespace-pre-wrap">
                 {log}
               </pre>
             ))}
           </div>
-
-          <div className="mt-4 grid grid-cols-2 gap-4 w-full max-w-xl">
-            {activeMoves.map((move, index) => (
-              <button
-                key={move.id}
-                onClick={() => handleMoveClick(index)}
-                disabled={move.disabled}
-                className="rounded-md bg-gray-700 p-4 text-left font-bold text-white shadow-sm hover:bg-gray-600 disabled:opacity-50 disabled:bg-red-900"
-              >
-                <p className="text-xl">{move.move}</p>
-                <p className="text-sm font-normal text-gray-300">
-                  {move.pp} / {move.maxpp} PP
-                </p>
-              </button>
-            ))}
-          </div>
-        </>
+        </div>
       )}
     </main>
   );
