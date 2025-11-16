@@ -103,20 +103,6 @@ export default function Home() {
               const request: BattleRequest = JSON.parse(requestJson);
               
               if (request.side.id === currentPID) {
-                
-                // CRITICAL FIX: Atualiza o estado da equipe imediatamente do request
-                setBattleState(prevState => {
-                  const playerKey = currentPID === 'p1' ? 'p1' : 'p2';
-                  return {
-                    ...prevState,
-                    [playerKey]: {
-                      ...prevState[playerKey],
-                      pokemon: request.side.pokemon, // Usa a lista mais atualizada
-                    },
-                  };
-                });
-                // Fim do CRITICAL FIX
-                
                 if (request.teamPreview) {
                   const teamString = Array.from({ length: team.length }, (_, i: number) => i + 1).join('');
                   sendChoice(`>${currentPID} team ${teamString}`);
@@ -242,7 +228,7 @@ export default function Home() {
                 />
                 <div className="flex-1">
                   <span className="text-2xl mr-4 block">{opponentTeam.active!.species}</span>
-                  <HPBar percentage={opponentTeam.active!.hpPercent} />
+                  <HPBar percentage={opponentTeam.active!.hpPercent} status={opponentTeam.active!.status} />
                   <span className="ml-1 text-sm block">{opponentTeam.active!.hpPercent}%</span>
                 </div>
               </div>
@@ -263,7 +249,7 @@ export default function Home() {
                 />
                 <div className="flex-1">
                   <span className="text-2xl mr-4 block">{myTeam.active!.species}</span>
-                  <HPBar percentage={myTeam.active!.hpPercent} />
+                  <HPBar percentage={myTeam.active!.hpPercent} status={myTeam.active!.status} />
                   <span className="ml-1 text-sm block">{myTeam.active!.hpPercent}%</span>
                 </div>
               </div>
@@ -340,15 +326,6 @@ export default function Home() {
                 </button>
               </div>
             )}
-          </div>
-
-          {/* Log de Debug (Temporário) */}
-          <div className="mt-4 h-32 overflow-y-scroll bg-black p-2 rounded-md font-mono text-xs border-2 border-gray-700">
-            {battleState.logs.slice(-10).map((log: string, index: number) => (
-              <pre key={index} className="whitespace-pre-wrap">
-                {log}
-              </pre>
-            ))}
           </div>
         </div>
       )}
