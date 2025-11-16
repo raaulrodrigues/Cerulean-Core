@@ -18,12 +18,19 @@ export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
   const [battleLogs, setBattleLogs] = useState<string[]>([]);
   const [activeMoves, setActiveMoves] = useState<Move[]>([]);
+  const [playerID, setPlayerID] = useState<'p1' | 'p2' | null>(null);
+  const [status, setStatus] = useState<string>('Conectado');
 
-  // Usamos uma 'ref' para evitar problemas de estado antigo no 'useEffect'
   const logsRef = useRef(battleLogs);
+  const playerIDRef = useRef(playerID);
+  
   useEffect(() => {
     logsRef.current = battleLogs;
   }, [battleLogs]);
+  
+  useEffect(() => {
+    playerIDRef.current = playerID;
+  }, [playerID]);
 
   const sendChoice = (choice: string) => {
     console.log("Enviando escolha:", choice);
@@ -36,12 +43,24 @@ export default function Home() {
     socket.on('connect', () => setIsConnected(true));
     socket.on('disconnect', () => setIsConnected(false));
 
+    socket.on('status', (message: string) => {
+      setStatus(message);
+    });
+
+    socket.on('battle-start', (id: 'p1' | 'p2') => {
+      console.log(`Batalha iniciada! Você é: ${id}`);
+      setPlayerID(id);
+      setStatus('Batalha em andamento');
+    });
+
     socket.on('battle-log', (chunk: string) => {
       const lines = chunk.split('\n');
       const newLogs = [...logsRef.current, ...lines];
       setBattleLogs(newLogs);
 
-      // --- O CÉREBRO LÓGICO (CORRIGIDO) ---
+      const currentPID = playerIDRef.current; 
+      if (!currentPID) return;
+
       for (const line of lines) {
         if (line.startsWith('|request|')) {
           const requestJson = line.substring(9);
@@ -49,30 +68,15 @@ export default function Home() {
             try {
               const request = JSON.parse(requestJson);
               
-              // Lógica 1: É Team Preview?
-              if (request.teamPreview) {
-                if (request.side.id === 'p1') {
-                  sendChoice('>p1 team 1');
-                } else if (request.side.id === 'p2') {
-                  sendChoice('>p2 team 1');
-                }
-              }
-              // Lógica 2: É um pedido de jogada (movimento/troca)?
-              else if (request.forceSwitch) {
-                // Lógica de troca (ainda não implementada)
-                // Por enquanto, apenas envia o primeiro Pokémon
-                sendChoice(`>p1 switch 1`);
-              } else if (request.active) {
-                // Se for o P1, mostra os botões
-                if (request.side.id === 'p1') {
+              if (request.side.id === currentPID) {
+                if (request.teamPreview) {
+                  sendChoice(`>${currentPID} team 1`);
+                } else if (request.forceSwitch) {
+                  sendChoice(`>${currentPID} switch 1`);
+                } else if (request.active) {
                   setActiveMoves(request.active[0].moves);
                 }
-                // Se for o P2 (IA), escolhe o movimento 1
-                else if (request.side.id === 'p2') {
-                  sendChoice('>p2 move 1');
-                }
               }
-
             } catch (e) {
               console.error("Erro ao parsear JSON:", requestJson, e);
             }
@@ -89,19 +93,21 @@ export default function Home() {
   const startBattle = () => {
     setBattleLogs([]);
     setActiveMoves([]);
+    setPlayerID(null);
+    setStatus('Procurando...');
     socket.emit('procurarBatalha');
   };
 
   const handleMoveClick = (moveIndex: number) => {
-    sendChoice(`>p1 move ${moveIndex + 1}`);
+    sendChoice(`>${playerIDRef.current} move ${moveIndex + 1}`);
     setActiveMoves([]);
   };
 
   return (
     <main className="flex min-h-screen flex-col items-center p-12 bg-gray-900 text-white">
-      <h1 className="text-4xl font-bold mb-4">Cerulean Core - Fase 4 (v3)</h1>
+      <h1 className="text-4xl font-bold mb-4">Cerulean Core - Fase 5</h1>
       <p className="mb-6 text-gray-400">
-        Status: {isConnected ? 'Conectado' : 'Desconectado'}
+        Status: {isConnected ? status : 'Desconectado'}
       </p>
       <button
         onClick={startBattle}

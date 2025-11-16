@@ -14,61 +14,77 @@ const io = new Server(httpServer, {
 });
 
 const activeStreams = new Map<string, BattleStream>();
+let waitingPlayer: Socket | null = null;
 
-// --- A FUNÇÃO DE LOOP ---
-async function runStreamReadLoop(socket: Socket, stream: BattleStream, socketId: string) {
+async function runStreamReadLoop(p1: Socket, p2: Socket, stream: BattleStream) {
+  const p1_id = p1.id;
+  const p2_id = p2.id;
+  
   try {
     let chunk = await stream.read();
     while (chunk) {
-      if (activeStreams.has(socketId)) {
-        socket.emit('battle-log', chunk);
-
-        if (chunk.includes('|win|')) {
-          console.log(`Batalha terminada (win) para ${socketId}, encerrando loop.`);
-          stream.destroy();
-          activeStreams.delete(socketId);
-          break;
-        }
+      if (activeStreams.has(p1_id) && activeStreams.has(p2_id)) {
+        p1.emit('battle-log', chunk);
+        p2.emit('battle-log', chunk);
       } else {
-        console.log(`Socket ${socketId} desconectado, encerrando loop.`);
-        stream.destroy();
+        console.log("Um jogador desconectou, encerrando loop.");
+        if (!stream.battle?.ended) {
+          stream.write(`>forfeit ${activeStreams.has(p1_id) ? 'p2' : 'p1'}`);
+        }
         break;
       }
+
+      if (chunk.includes('|win|')) {
+        console.log(`Batalha terminada (win) para ${p1_id} vs ${p2_id}`);
+      }
+
       chunk = await stream.read();
     }
   } catch (e) {
-    console.error(`Erro no stream read loop para ${socketId}:`, e);
-    stream.destroy();
-    activeStreams.delete(socketId);
+    console.error(`Erro no stream read loop:`, e);
+  } finally {
+    console.log(`Loop de leitura encerrado. Limpando referências...`);
+    activeStreams.delete(p1_id);
+    activeStreams.delete(p2_id);
   }
-  console.log(`Loop de leitura encerrado para ${socketId}`);
 }
 
-
-// --- CONFIGURAÇÃO DO SERVIDOR SOCKET ---
 io.on('connection', (socket) => {
   console.log('Um cliente se conectou:', socket.id);
 
   socket.on('procurarBatalha', () => {
     console.log(`Cliente ${socket.id} está procurando uma batalha.`);
     
-    const stream = new BattleStream();
-    activeStreams.set(socket.id, stream);
+    if (waitingPlayer && waitingPlayer.id !== socket.id) {
+      console.log(`Match encontrado! ${waitingPlayer.id} vs ${socket.id}`);
+      const p1 = waitingPlayer;
+      const p2 = socket;
+      waitingPlayer = null;
 
-    // ... (Definição dos times p1Team e p2Team) ...
-    const p1Team = Teams.pack([
-      { name: 'Pikachu', species: 'Pikachu', item: 'lightball', ability: 'lightningrod', moves: ['thunderbolt', 'volttackle', 'surf', 'quickattack'], nature: 'Hasty', gender: 'M', evs: { hp: 4, atk: 252, spe: 252 }, ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }, level: 100 },
-    ]);
-    const p2Team = Teams.pack([
-      { name: 'Charizard', species: 'Charizard', item: 'charizarditex', ability: 'blaze', moves: ['flareblitz', 'dragonclaw', 'roost', 'swordsdance'], nature: 'Jolly', gender: 'M', evs: { atk: 252, spd: 4, spe: 252 }, ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }, level: 100 },
-    ]);
+      const stream = new BattleStream();
+      activeStreams.set(p1.id, stream);
+      activeStreams.set(p2.id, stream);
 
-    stream.write(`>start {"formatid":"gen9anythinggoes"}`);
-    stream.write(`>player p1 {"name":"Treinador 1","team":"${p1Team}"}`);
-    stream.write(`>player p2 {"name":"Treinador 2","team":"${p2Team}"}`);
+      const p1Team = Teams.pack([
+        { name: 'Pikachu', species: 'Pikachu', item: 'lightball', ability: 'lightningrod', moves: ['thunderbolt', 'volttackle', 'surf', 'quickattack'], nature: 'Hasty', gender: 'M', evs: { hp: 4, atk: 252, spe: 252 }, ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }, level: 100 },
+      ]);
+      const p2Team = Teams.pack([
+        { name: 'Charizard', species: 'Charizard', item: 'charizarditex', ability: 'blaze', moves: ['flareblitz', 'dragonclaw', 'roost', 'swordsdance'], nature: 'Jolly', gender: 'M', evs: { atk: 252, spd: 4, spe: 252 }, ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }, level: 100 },
+      ]);
 
-    // Inicia o loop de leitura (sem 'await')
-    runStreamReadLoop(socket, stream, socket.id);
+      stream.write(`>start {"formatid":"gen9anythinggoes"}`);
+      stream.write(`>player p1 {"name":"Treinador 1","team":"${p1Team}"}`);
+      stream.write(`>player p2 {"name":"Treinador 2","team":"${p2Team}"}`);
+
+      p1.emit('battle-start', 'p1');
+      p2.emit('battle-start', 'p2');
+      
+      runStreamReadLoop(p1, p2, stream);
+
+    } else if (!waitingPlayer) {
+      waitingPlayer = socket;
+      socket.emit('status', 'Aguardando oponente...');
+    }
   });
 
   socket.on('player-choice', (choice: string) => {
@@ -81,10 +97,15 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('Cliente desconectado:', socket.id);
+    
     const stream = activeStreams.get(socket.id);
-    if (stream) {
+    if (stream && !stream.battle?.ended) {
       stream.destroy();
-      activeStreams.delete(socket.id);
+    }
+    activeStreams.delete(socket.id);
+    
+    if (waitingPlayer && waitingPlayer.id === socket.id) {
+      waitingPlayer = null;
     }
   });
 });
