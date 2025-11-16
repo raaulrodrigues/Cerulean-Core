@@ -1,3 +1,12 @@
+export interface RequestPokemon {
+  ident: string;
+  details: string;
+  condition: string;
+  active: boolean;
+  item: string;
+  moves?: any; 
+}
+
 export interface ActivePokemon {
   species: string;
   condition: string;
@@ -11,6 +20,7 @@ export interface ActivePokemon {
 export interface PlayerBattleState {
   active: ActivePokemon | null;
   teamSize: number;
+  pokemon: RequestPokemon[];
 }
 
 export interface BattleState {
@@ -22,25 +32,37 @@ export interface BattleState {
 }
 
 export const initialBattleState: BattleState = {
-  p1: { active: null, teamSize: 0 },
-  p2: { active: null, teamSize: 0 },
+  p1: { active: null, teamSize: 0, pokemon: [] },
+  p2: { active: null, teamSize: 0, pokemon: [] },
   logs: [],
   turn: 0,
   isActive: false,
 };
 
 export const parseBattleLog = (currentState: BattleState, chunk: string): BattleState => {
-  let newState = { ...currentState };
+  let newState = JSON.parse(JSON.stringify(currentState));
   
   const lines = chunk.split('\n');
 
   lines.forEach((line) => {
     newState.logs.push(line);
 
+    if (line.startsWith('|sideupdate|')) {
+      const jsonStr = line.substring(line.indexOf('{'));
+      try {
+        const data = JSON.parse(jsonStr);
+        const playerSlot = data.side.id;
+        const targetState = playerSlot === 'p1' ? newState.p1 : newState.p2;
+        targetState.pokemon = data.side.pokemon;
+      } catch (e) {
+        
+      }
+    }
+
     if (line.startsWith('|player|')) {
       const parts = line.split('|');
       const playerSlot = parts[2] as 'p1' | 'p2';
-      const teamSizePart = lines.find(l => l.startsWith(`|teamsize|${playerSlot}|`));
+      const teamSizePart = lines.find((l: string) => l.startsWith(`|teamsize|${playerSlot}|`));
       if (teamSizePart) {
         const size = parseInt(teamSizePart.split('|')[3]);
         if (playerSlot === 'p1') {
@@ -108,6 +130,12 @@ export const parseBattleLog = (currentState: BattleState, chunk: string): Battle
         targetState.active.condition = condition;
         targetState.active.hpPercent = hpPercent;
         targetState.active.status = status;
+      }
+
+      const pokemonName = parts[2].substring(parts[2].indexOf(':') + 1, parts[2].indexOf(' ('));
+      const teamMember = targetState.pokemon.find((p: RequestPokemon) => p.ident.includes(pokemonName));
+      if (teamMember) {
+          teamMember.condition = parts[3];
       }
     }
   });

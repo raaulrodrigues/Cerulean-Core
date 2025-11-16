@@ -6,6 +6,7 @@ import { PokemonSet } from '@/lib/constants';
 import Link from 'next/link';
 import { parseBattleLog, initialBattleState, BattleState } from '@/lib/battleParser';
 import HPBar from './hp-bar';
+import Image from 'next/image';
 
 let socket: Socket;
 
@@ -24,7 +25,7 @@ interface RequestPokemon {
   condition: string;
   active: boolean;
   item: string;
-  moves: Move[];
+  moves?: Move[];
 }
 
 interface Side {
@@ -39,6 +40,11 @@ interface BattleRequest {
   teamPreview?: boolean;
   forceSwitch?: boolean;
 }
+
+const getSpritePath = (speciesName: string) => {
+  const normalizedName = speciesName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return `https://play.pokemonshowdown.com/sprites/gen5/${normalizedName}.png`;
+};
 
 export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
@@ -97,6 +103,20 @@ export default function Home() {
               const request: BattleRequest = JSON.parse(requestJson);
               
               if (request.side.id === currentPID) {
+                
+                // CRITICAL FIX: Atualiza o estado da equipe imediatamente do request
+                setBattleState(prevState => {
+                  const playerKey = currentPID === 'p1' ? 'p1' : 'p2';
+                  return {
+                    ...prevState,
+                    [playerKey]: {
+                      ...prevState[playerKey],
+                      pokemon: request.side.pokemon, // Usa a lista mais atualizada
+                    },
+                  };
+                });
+                // Fim do CRITICAL FIX
+                
                 if (request.teamPreview) {
                   const teamString = Array.from({ length: team.length }, (_, i: number) => i + 1).join('');
                   sendChoice(`>${currentPID} team ${teamString}`);
@@ -105,8 +125,11 @@ export default function Home() {
                   if (availableSlot !== -1) {
                     sendChoice(`>${currentPID} switch ${availableSlot + 1}`);
                   }
+                  if (request.side.pokemon.some(p => p.condition === '0 fnt' && p.active)) {
+                     setIsSwitching(true);
+                  }
                 } else if (request.active) {
-                  setActiveMoves(request.active[0].moves);
+                  setActiveMoves(request.active[0].moves || []);
                   setIsSwitching(false); 
                 }
               }
@@ -173,6 +196,7 @@ export default function Home() {
   const showSwitchButtons = isSwitching && winner === null;
   const showSwitchOption = !isSwitching && activeMoves.length > 0 && winner === null;
 
+
   return (
     <main className="flex min-h-screen flex-col items-center p-12 bg-gray-900 text-white">
       <h1 className="text-4xl font-bold mb-4">Cerulean Core - Lobby</h1>
@@ -209,9 +233,18 @@ export default function Home() {
             </p>
             {isOpponentActive && (
               <div className="flex items-center">
-                <span className="text-2xl mr-4">{opponentTeam.active!.species}</span>
-                <HPBar percentage={opponentTeam.active!.hpPercent} />
-                <span className="ml-3 text-sm">{opponentTeam.active!.hpPercent}%</span>
+                <Image 
+                  src={getSpritePath(opponentTeam.active!.species)} 
+                  alt={opponentTeam.active!.species} 
+                  width={64} 
+                  height={64} 
+                  className="mr-4"
+                />
+                <div className="flex-1">
+                  <span className="text-2xl mr-4 block">{opponentTeam.active!.species}</span>
+                  <HPBar percentage={opponentTeam.active!.hpPercent} />
+                  <span className="ml-1 text-sm block">{opponentTeam.active!.hpPercent}%</span>
+                </div>
               </div>
             )}
           </div>
@@ -221,15 +254,25 @@ export default function Home() {
             <p className="text-lg font-bold mb-2">Seu Pokémon: {isMyPokemonActive ? myTeam.active!.species : '---'}</p>
             {isMyPokemonActive && (
               <div className="flex items-center">
-                <span className="text-2xl mr-4">{myTeam.active!.species}</span>
-                <HPBar percentage={myTeam.active!.hpPercent} />
-                <span className="ml-3 text-sm">{myTeam.active!.hpPercent}%</span>
+                <Image 
+                  src={getSpritePath(myTeam.active!.species)} 
+                  alt={myTeam.active!.species} 
+                  width={64} 
+                  height={64} 
+                  className="mr-4"
+                />
+                <div className="flex-1">
+                  <span className="text-2xl mr-4 block">{myTeam.active!.species}</span>
+                  <HPBar percentage={myTeam.active!.hpPercent} />
+                  <span className="ml-1 text-sm block">{myTeam.active!.hpPercent}%</span>
+                </div>
               </div>
             )}
           </div>
 
-          {/* Botões de Ação - Attack/Switch */}
+          {/* PAINEL DE AÇÃO (Moves ou Switch Menu) */}
           <div className="mt-4 w-full max-w-4xl mx-auto">
+            
             {showSwitchOption && (
               <button
                 onClick={() => setIsSwitching(true)}
@@ -258,27 +301,44 @@ export default function Home() {
             )}
 
             {showSwitchButtons && (
-              <div className="grid grid-cols-3 gap-2">
-                {team.map((pokemon, index) => (
-                  <button
-                    key={pokemon.name}
-                    onClick={() => handleSwitchClick(index)}
-                    disabled={myTeam.active?.species === pokemon.species || pokemon.name === 'Fainted'} // Simplificado
-                    className={`rounded-md p-2 text-sm font-bold text-white shadow-sm ${myTeam.active?.species === pokemon.species ? 'bg-blue-800' : 'bg-gray-600 hover:bg-gray-500'}`}
-                  >
-                    {pokemon.name}
-                  </button>
-                ))}
+              <div className="flex flex-col items-center">
+                <div className="grid grid-cols-3 gap-2 w-full">
+                  {myTeam.pokemon.map((pokemon: RequestPokemon, index: number) => {
+                    const conditionParts = pokemon.condition.split(' ');
+                    const isFainted = conditionParts.length > 1 && conditionParts[1] === 'fnt';
+                    const isActive = pokemon.active;
+                    const pokemonName = pokemon.details.split(',')[0]; 
+                    const hpText = conditionParts[0];
+
+                    return (
+                      <button
+                        key={pokemon.ident}
+                        onClick={() => handleSwitchClick(index)}
+                        disabled={isFainted || isActive}
+                        className={`rounded-md p-2 text-sm font-bold shadow-sm 
+                          ${isActive 
+                            ? 'bg-blue-800' 
+                            : isFainted 
+                              ? 'bg-red-900 opacity-50' 
+                              : 'bg-gray-600 hover:bg-gray-500'}
+                        `}
+                      >
+                        {pokemonName} {isFainted && '(FNT)'}
+                        <span className='block text-xs font-normal opacity-70'>
+                           HP: {hpText}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                
+                <button
+                  onClick={() => setIsSwitching(false)}
+                  className="w-full mt-2 p-1 bg-red-800 rounded-md font-semibold hover:bg-red-700"
+                >
+                  Cancelar Troca
+                </button>
               </div>
-            )}
-            
-            {showSwitchButtons && (
-              <button
-                onClick={() => setIsSwitching(false)}
-                className="w-full mt-2 p-1 bg-red-800 rounded-md font-semibold hover:bg-red-700"
-              >
-                Cancelar Troca
-              </button>
             )}
           </div>
 
